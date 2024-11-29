@@ -5,11 +5,15 @@ from datetime import datetime
 import plotly.graph_objects as go
 import logging
 import os
+from dotenv import load_dotenv
+
+# Load environment variables
+load_dotenv()
 
 # Matomo API configuration
-MATOMO_URL = "https://wa.chop.edu/index.php"
-TOKEN_AUTH = "a80e73fafbfdf79815af9b75ff54f4c2"
-SITE_ID = "21"
+MATOMO_URL = os.getenv("MATOMO_URL")
+TOKEN_AUTH = os.getenv("TOKEN_AUTH")
+SITE_ID = os.getenv("SITE_ID")
 
 logging.basicConfig(filename='matomo_extractor.log', level=logging.INFO,
                    format='%(asctime)s - %(levelname)s - %(message)s')
