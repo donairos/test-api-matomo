@@ -3,92 +3,309 @@ import requests
 import pandas as pd
 from datetime import datetime
 import plotly.graph_objects as go
+import logging
+import os
 
 # Matomo API configuration
 MATOMO_URL = "https://wa.chop.edu/index.php"
 TOKEN_AUTH = "a80e73fafbfdf79815af9b75ff54f4c2"
 SITE_ID = "21"
 
-def connect_to_matomo():
+logging.basicConfig(filename='matomo_extractor.log', level=logging.INFO,
+                   format='%(asctime)s - %(levelname)s - %(message)s')
+
+def fetch_event_data(start_date, end_date):
+    """Fetch event data from Matomo API"""
+    events_data = []
     try:
-        params = {
+        # Get event details
+        name_params = {
             'module': 'API',
-            'method': 'SitesManager.getSiteFromId',
+            'method': 'Events.getName',
             'idSite': SITE_ID,
+            'period': 'range',
+            'date': f"{start_date},{end_date}",
             'format': 'JSON',
-            'token_auth': TOKEN_AUTH
+            'token_auth': TOKEN_AUTH,
+            'filter_limit': -1,
+            'flat': 1
         }
-        response = requests.post(MATOMO_URL, data=params)
-        response.raise_for_status()
-        return True
-    except requests.exceptions.RequestException as e:
-        st.error(f"Error connecting to Matomo API: {str(e)}")
-        return False
 
-def fetch_event_names(period, start_date, end_date=None):
-    if period == "range" and end_date:
-        date_param = f"{start_date},{end_date}"
+        name_response = requests.post(MATOMO_URL, data=name_params)
+        names_data = name_response.json()
+
+        # Log response for debugging
+        logging.info(f"Names Response: {name_response.text[:500]}")
+        
+        # Process the data
+        for event in names_data:
+            if isinstance(event, dict):
+                event_data = {
+                    'Event Name': event.get('label', ''),
+                    'Event Count': event.get('nb_events', 0),
+                    'Events With Value': event.get('nb_events_with_value', 0),
+                    'Total Event Value': event.get('sum_event_value', 0)
+                }
+                events_data.append(event_data)
+        
+        df = pd.DataFrame(events_data)
+        
+        # Sort by Event Count in descending order
+        if not df.empty:
+            df = df.sort_values('Event Count', ascending=False)
+            
+            # Convert numeric columns to appropriate types
+            numeric_columns = ['Event Count', 'Events With Value', 'Total Event Value']
+            for col in numeric_columns:
+                df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype(int)
+            
+        return df
+    
+    except Exception as e:
+        logging.error(f"Error in fetch_event_data: {str(e)}")
+        st.error(f"Error fetching event data: {str(e)}")
+        return pd.DataFrame()
+
+def generate_comparison_summary(row):
+    """Generate summary for category comparison using statistics"""
+    period1_value = row['Event Count_period1']
+    period2_value = row['Event Count_period2']
+    percent_change = ((period2_value - period1_value) / period1_value * 100) if period1_value != 0 else float('inf')
+    abs_change = period2_value - period1_value
+    
+    # Determine trend and magnitude
+    if abs_change == 0:
+        trend = "remained stable"
     else:
-        date_param = start_date
+        trend = "increased" if abs_change > 0 else "decreased"
+        
+    # Determine magnitude description
+    if abs(percent_change) < 10:
+        magnitude = "slightly"
+    elif abs(percent_change) < 30:
+        magnitude = "moderately"
+    elif abs(percent_change) < 50:
+        magnitude = "significantly"
+    else:
+        magnitude = "dramatically"
+    
+    summary = (
+        f"This category {trend} {magnitude} from {period1_value:,} to {period2_value:,} events "
+        f"({percent_change:+.1f}% change)"
+    )
+    
+    return summary
 
-    params = {
-        'module': 'API',
-        'method': 'Events.getName',
-        'idSite': SITE_ID,
-        'period': period,
-        'date': date_param,
-        'format': 'JSON',
-        'token_auth': TOKEN_AUTH,
-        'flat': 1,
-        'filter_limit': -1
-    }
-
-    response = requests.post(MATOMO_URL, data=params)
-    response.raise_for_status()
-    data = response.json()
-    return pd.json_normalize(data)
-
-# Initialize the Streamlit app
-st.title("Matomo Data Extractor")
-
-# Date selection
-st.sidebar.header("Select Parameters")
-
-old_start_date = st.sidebar.date_input("Old Site Start Date", value=datetime(2021, 1, 1))
-old_end_date = st.sidebar.date_input("Old Site End Date", value=datetime(2022, 12, 31))
-
-new_start_date = st.sidebar.date_input("New Site Start Date", value=datetime(2023, 1, 1))
-new_end_date = st.sidebar.date_input("New Site End Date", value=datetime.now().date())
-
-if connect_to_matomo():
-    if st.sidebar.button("Fetch Data"):
+def compare_csv_data():
+    """Function to handle CSV comparison in Streamlit"""
+    st.subheader("Compare Event Data from CSV Files")
+    
+    # File uploaders for two CSV files
+    st.write("Upload two CSV files to compare:")
+    file1 = st.file_uploader("First Period CSV", type=['csv'], key='file1')
+    file2 = st.file_uploader("Second Period CSV", type=['csv'], key='file2')
+    
+    if file1 and file2:
         try:
-            old_event_data = fetch_event_names("range", old_start_date.strftime("%Y-%m-%d"), old_end_date.strftime("%Y-%m-%d"))
-            new_event_data = fetch_event_names("range", new_start_date.strftime("%Y-%m-%d"), new_end_date.strftime("%Y-%m-%d"))
-
-            # Combine old and new event data
-            combined_data = pd.concat([old_event_data, new_event_data], ignore_index=True)
-
-            # Create event name comparison plot
+            # Read CSV files
+            df1 = pd.read_csv(file1)
+            df2 = pd.read_csv(file2)
+            
+            # Process each dataframe
+            grouped1 = df1.groupby('Event Tag (IF)')['Event Count'].sum().reset_index()
+            grouped2 = df2.groupby('Event Tag (IF)')['Event Count'].sum().reset_index()
+            
+            # Merge the datasets
+            merged_df = pd.merge(
+                grouped1, grouped2,
+                on='Event Tag (IF)',
+                how='outer',
+                suffixes=('_period1', '_period2')
+            ).fillna(0)
+            
+            # Calculate percent change
+            merged_df['percent_change'] = ((merged_df['Event Count_period2'] - merged_df['Event Count_period1']) / 
+                                         merged_df['Event Count_period1'] * 100).fillna(0)
+            
+            # Sort by absolute percent change
+            merged_df = merged_df.sort_values('percent_change', key=abs, ascending=False)
+            
+            # Overall summary at the top
+            st.subheader("Overall Summary")
+            total_change = ((merged_df['Event Count_period2'].sum() - merged_df['Event Count_period1'].sum()) / 
+                          merged_df['Event Count_period1'].sum() * 100)
+            st.write(f"""
+            - Total events changed by {total_change:+.1f}% between the two periods
+            - {len(merged_df[merged_df['percent_change'] > 0])} categories increased
+            - {len(merged_df[merged_df['percent_change'] < 0])} categories decreased
+            - {len(merged_df[merged_df['percent_change'] == 0])} categories remained unchanged
+            """)
+            
+            # Create main comparison visualization
             fig = go.Figure()
-            fig.add_trace(go.Bar(x=combined_data[combined_data['label'].isin(old_event_data['label'])]['label'], y=combined_data[combined_data['label'].isin(old_event_data['label'])]['nb_events'], name='Old Site'))
-            fig.add_trace(go.Bar(x=combined_data[combined_data['label'].isin(new_event_data['label'])]['label'], y=combined_data[combined_data['label'].isin(new_event_data['label'])]['nb_events'], name='New Site'))
+            
+            # Add bars for period 1
+            fig.add_trace(go.Bar(
+                name=os.path.splitext(file1.name)[0],
+                y=merged_df['Event Tag (IF)'],
+                x=merged_df['Event Count_period1'],
+                orientation='h',
+                marker_color='rgba(54, 162, 235, 0.7)'
+            ))
+            
+            # Add bars for period 2
+            fig.add_trace(go.Bar(
+                name=os.path.splitext(file2.name)[0],
+                y=merged_df['Event Tag (IF)'],
+                x=merged_df['Event Count_period2'],
+                orientation='h',
+                marker_color='rgba(255, 99, 132, 0.7)'
+            ))
+            
+            # Update layout
             fig.update_layout(
-                title="Event Name Comparison",
-                xaxis_title="Event Name",
-                yaxis_title="Event Count",
-                barmode='group'
+                title="Event Tag Comparison",
+                barmode='group',
+                height=max(400, len(merged_df) * 30),
+                margin=dict(l=200),
+                yaxis={'categoryorder':'total ascending'},
+                xaxis_title="Event Count",
+                yaxis_title="Event Tag (IF)"
             )
+            
+            # Display the visualization
             st.plotly_chart(fig, use_container_width=True)
-
-            # Display event data
-            st.subheader("Old Site Event Data")
-            st.dataframe(old_event_data)
-
-            st.subheader("New Site Event Data")
-            st.dataframe(new_event_data)
-
-        except requests.exceptions.RequestException as e:
-            st.error(f"Failed to fetch data: {str(e)}")
+            
+            # Display detailed analysis for each category
+            st.subheader("Detailed Category Analysis")
+            
+            for _, row in merged_df.iterrows():
+                with st.expander(f"{row['Event Tag (IF)']} (Change: {row['percent_change']:.1f}%)"):
+                    col1, col2 = st.columns([2, 1])
+                    
+                    with col1:
+                        # Create sparkline chart
+                        sparkline = go.Figure()
+                        sparkline.add_trace(go.Scatter(
+                            x=['Period 1', 'Period 2'],
+                            y=[row['Event Count_period1'], row['Event Count_period2']],
+                            mode='lines+markers',
+                            line=dict(color='blue'),
+                            marker=dict(color=['blue', 'red'])
+                        ))
+                        sparkline.update_layout(
+                            height=100,
+                            margin=dict(l=0, r=0, t=0, b=0),
+                            showlegend=False,
+                            xaxis_showgrid=False,
+                            yaxis_showgrid=False
+                        )
+                        st.plotly_chart(sparkline, use_container_width=True)
+                    
+                    with col2:
+                        # Add metrics
+                        st.metric(
+                            "Change in Events",
+                            f"{row['Event Count_period2'] - row['Event Count_period1']:,.0f}",
+                            f"{row['percent_change']:.1f}%"
+                        )
+                    
+                    # Generate and display summary
+                    summary = generate_comparison_summary(row)
+                    st.write("Analysis:", summary)
+            
+            # Display the data table
+            st.subheader("Comparison Data")
+            display_df = merged_df.copy()
+            display_df['Percent Change'] = display_df['percent_change'].apply(lambda x: f"{x:.1f}%")
+            display_df = display_df.drop('percent_change', axis=1)
+            st.dataframe(display_df, use_container_width=True)
+            
+            # Add download button for the comparison data
+            csv = merged_df.to_csv(index=False)
+            st.download_button(
+                "Download Comparison Data",
+                csv,
+                "event_comparison.csv",
+                "text/csv",
+                key='download-csv'
+            )
+            
         except Exception as e:
-            st.error(f"An unexpected error occurred: {str(e)}")
+            st.error(f"Error processing CSV files: {str(e)}")
+    else:
+        st.info("Please upload both CSV files to see the comparison.")
+
+def main():
+    st.set_page_config(page_title="Matomo Data Extractor", layout="wide")
+    st.title("Matomo Analytics")
+    
+    # Simplified sidebar with just two options
+    page = st.sidebar.radio("Select Option", ["Extract & Export Events Data", "Compare Events Data"])
+    
+    if os.path.exists('matomo_extractor.log'):
+        with open('matomo_extractor.log', 'r') as log_file:
+            if st.sidebar.checkbox("Show Logs"):
+                st.sidebar.text_area("Application Logs", log_file.read(), height=300)
+    
+    if page == "Extract & Export Events Data":
+        col1, col2 = st.columns(2)
+        with col1:
+            start_date = st.date_input("Start Date", value=datetime(2023, 1, 1))
+        with col2:
+            end_date = st.date_input("End Date", value=datetime.now().date())
+            
+        if st.button("Extract Events Data"):
+            with st.spinner('Fetching events data...'):
+                df = fetch_event_data(start_date.strftime("%Y-%m-%d"), end_date.strftime("%Y-%m-%d"))
+                if not df.empty:
+                    # Display summary statistics
+                    st.subheader("Events Summary")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.metric("Total Event Count", f"{df['Event Count'].sum():,}")
+                    with col2:
+                        st.metric("Total Events With Value", f"{df['Events With Value'].sum():,}")
+                    with col3:
+                        st.metric("Total Event Value", f"{df['Total Event Value'].sum():,}")
+                    
+                    # Add visualization for top 10 events
+                    st.subheader("Top 10 Events")
+                    top_10_events = df.head(10).iloc[::-1]  # Reverse the order for display
+                    fig = go.Figure(data=[
+                        go.Bar(
+                            y=top_10_events['Event Name'],
+                            x=top_10_events['Event Count'],
+                            orientation='h',
+                            text=top_10_events['Event Count'].apply(lambda x: f"{x:,}"),
+                            textposition='auto',
+                        )
+                    ])
+                    fig.update_layout(
+                        yaxis_title="Event Name",
+                        xaxis_title="Event Count",
+                        height=400,
+                        margin=dict(l=200),
+                        showlegend=False
+                    )
+                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    # Display the full dataset
+                    st.subheader("All Events")
+                    st.dataframe(df, use_container_width=True)
+                    
+                    # Download button
+                    st.download_button(
+                        "Download CSV",
+                        df.to_csv(index=False),
+                        "events_data.csv",
+                        "text/csv"
+                    )
+                else:
+                    st.error("No events found")
+    
+    else:  # CSV Comparison
+        compare_csv_data()
+
+if __name__ == "__main__":
+    main()
