@@ -6,6 +6,10 @@ import plotly.graph_objects as go
 import logging
 import os
 from dotenv import load_dotenv
+from PIL import Image
+import io
+import base64
+import json
 
 # Load environment variables
 load_dotenv()
@@ -240,19 +244,147 @@ def compare_csv_data():
     else:
         st.info("Please upload both CSV files to see the comparison.")
 
+def load_reports():
+    """Load reports from JSON file"""
+    try:
+        with open('reports.json', 'r') as f:
+            return json.load(f)
+    except FileNotFoundError:
+        return []
+
+def save_reports(reports):
+    """Save reports to JSON file"""
+    with open('reports.json', 'w') as f:
+        json.dump(reports, f)
+
+def documentation_page():
+    st.title("Analytics Documentation")
+    
+    # Initialize session state from file if it doesn't exist
+    if 'reports' not in st.session_state:
+        st.session_state.reports = load_reports()
+    
+    # Create a new report section
+    st.subheader("Create New Report Section")
+    
+    # Date and Title
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        report_date = st.date_input("Report Date")
+    with col2:
+        report_title = st.text_input("Report Title")
+    
+    # Main report sections
+    findings = st.text_area("Findings", height=150,
+                           help="Document key findings from your analytics data")
+    
+    observations = st.text_area("Observations", height=150,
+                              help="Note any patterns, trends, or interesting data points")
+    
+    recommendations = st.text_area("Recommendations", height=150,
+                                 help="Suggest actionable improvements based on the data")
+    
+    conclusion = st.text_area("Conclusion", height=100,
+                            help="Summarize key takeaways and next steps")
+    
+    # Screenshot upload section
+    st.subheader("Upload Screenshots")
+    uploaded_files = st.file_uploader("Upload screenshots or relevant images", 
+                                    type=['png', 'jpg', 'jpeg'], 
+                                    accept_multiple_files=True,
+                                    key='doc_uploads')
+    
+    screenshots = []
+    if uploaded_files:
+        for uploaded_file in uploaded_files:
+            # Convert uploaded image to base64 for storage
+            image_bytes = uploaded_file.read()
+            encoded_image = base64.b64encode(image_bytes).decode()
+            screenshots.append({
+                'name': uploaded_file.name,
+                'data': encoded_image
+            })
+    
+    # Save report button
+    if st.button("Save Report Section"):
+        if report_title:  # Ensure at least a title is provided
+            new_report = {
+                'date': report_date.strftime("%Y-%m-%d"),
+                'title': report_title,
+                'findings': findings,
+                'observations': observations,
+                'recommendations': recommendations,
+                'conclusion': conclusion,
+                'screenshots': screenshots
+            }
+            st.session_state.reports.append(new_report)
+            save_reports(st.session_state.reports)  # Save to file
+            st.success("Report section saved successfully!")
+        else:
+            st.error("Please provide at least a report title")
+    
+    # Display existing reports
+    if st.session_state.reports:
+        st.subheader("Existing Reports")
+        for idx, report in enumerate(st.session_state.reports):
+            with st.expander(f"{report['date']} - {report['title']}"):
+                # Display report content
+                st.write("### Findings")
+                st.write(report['findings'])
+                
+                st.write("### Observations")
+                st.write(report['observations'])
+                
+                st.write("### Recommendations")
+                st.write(report['recommendations'])
+                
+                st.write("### Conclusion")
+                st.write(report['conclusion'])
+                
+                # Display screenshots
+                if report['screenshots']:
+                    st.write("### Screenshots")
+                    cols = st.columns(3)
+                    for i, screenshot in enumerate(report['screenshots']):
+                        with cols[i % 3]:
+                            # Convert base64 back to image
+                            image_data = base64.b64decode(screenshot['data'])
+                            image = Image.open(io.BytesIO(image_data))
+                            st.image(image, caption=screenshot['name'])
+                
+                # Delete report button
+                if st.button(f"Delete Report", key=f"delete_{idx}"):
+                    st.session_state.reports.pop(idx)
+                    save_reports(st.session_state.reports)  # Save to file after deletion
+                    st.rerun()
+    
+    # Export functionality
+    if st.session_state.reports:
+        st.subheader("Export Documentation")
+        if st.button("Export as Markdown"):
+            markdown_content = generate_markdown_report(st.session_state.reports)
+            st.download_button(
+                label="Download Markdown Report",
+                data=markdown_content,
+                file_name="analytics_documentation.md",
+                mime="text/markdown"
+            )       
+
 def main():
     st.set_page_config(page_title="Matomo Data Extractor", layout="wide")
     st.title("Matomo Analytics")
     
     # Simplified sidebar with just two options
-    page = st.sidebar.radio("Select Option", ["Extract & Export Events Data", "Compare Events Data"])
+    page = st.sidebar.radio("Select Option", ["Extract & Export Events Data", "Compare Events Data", "Documentation"])
     
     if os.path.exists('matomo_extractor.log'):
         with open('matomo_extractor.log', 'r') as log_file:
             if st.sidebar.checkbox("Show Logs"):
                 st.sidebar.text_area("Application Logs", log_file.read(), height=300)
-    
-    if page == "Extract & Export Events Data":
+
+    if page == "Documentation":
+        documentation_page()
+    elif page == "Extract & Export Events Data":
         col1, col2 = st.columns(2)
         with col1:
             start_date = st.date_input("Start Date", value=datetime(2023, 1, 1))
