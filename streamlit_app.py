@@ -191,25 +191,28 @@ def compare_csv_data():
                 with st.expander(f"{row['Event Tag (IF)']} (Change: {row['percent_change']:.1f}%)"):
                     col1, col2 = st.columns([2, 1])
                     
-                    with col1:
-                        # Create sparkline chart
-                        sparkline = go.Figure()
-                        sparkline.add_trace(go.Scatter(
-                            x=['Period 1', 'Period 2'],
-                            y=[row['Event Count_period1'], row['Event Count_period2']],
-                            mode='lines+markers',
-                            line=dict(color='blue'),
-                            marker=dict(color=['blue', 'red'])
-                        ))
-                        sparkline.update_layout(
-                            height=100,
-                            margin=dict(l=0, r=0, t=0, b=0),
-                            showlegend=False,
-                            xaxis_showgrid=False,
-                            yaxis_showgrid=False
-                        )
-                        st.plotly_chart(sparkline, use_container_width=True)
-                    
+                with col1:
+                    # Create bar chart instead of sparkline
+                    comparison_chart = go.Figure()
+                    comparison_chart.add_trace(go.Bar(
+                        x=['Period 1', 'Period 2'],
+                        y=[row['Event Count_period1'], row['Event Count_period2']],
+                        marker_color=['rgba(54, 162, 235, 0.7)', 'rgba(255, 99, 132, 0.7)']
+                    ))
+                    comparison_chart.update_layout(
+                        height=200,
+                        margin=dict(l=20, r=20, t=30, b=20),
+                        showlegend=False,
+                        title=dict(
+                            text="Period Comparison",
+                            x=0.5,
+                            y=0.9
+                        ),
+                        yaxis_title="Event Count",
+                        bargap=0.3
+                    )
+                    st.plotly_chart(comparison_chart, use_container_width=True)
+                                    
                     with col2:
                         # Add metrics
                         st.metric(
